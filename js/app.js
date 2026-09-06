@@ -698,10 +698,8 @@
       dataVersionTimer = setInterval(checkDataVersion, DATA_VERSION_CHECK_INTERVAL);
     }
 
-    const REPORT_REFRESH_INTERVAL = CONFIG.REPORT_REFRESH_INTERVAL;
     const REPORT_REFRESH_STALE_AFTER = CONFIG.REPORT_REFRESH_STALE_AFTER;
 
-    let refreshTimer = null;
     let isLoadingReports = false;
     let lastReportsRefreshAt = 0;
 
@@ -747,24 +745,6 @@
       }
     }
 
-    function stopReportsRefreshTimer() {
-      if (refreshTimer !== null) {
-        clearInterval(refreshTimer);
-        refreshTimer = null;
-      }
-    }
-
-    function startReportsRefreshTimer() {
-      stopReportsRefreshTimer();
-
-      // 只有頁面在前景時才建立固定刷新計時器。
-      if (document.visibilityState !== "visible") return;
-
-      refreshTimer = setInterval(() => {
-        refreshReports();
-      }, REPORT_REFRESH_INTERVAL);
-    }
-
     document.addEventListener("visibilitychange", () => {
       if (document.visibilityState === "visible") {
         // 回到網頁時同時檢查公告與網站本體是否已有新版。
@@ -774,8 +754,6 @@
         checkForSiteUpdate();
         checkDataVersion();
         startDataVersionTimer();
-        startReportsRefreshTimer();
-        startSiteUpdateTimer();
       } else {
         stopDataVersionTimer();
         stopReportsRefreshTimer();
