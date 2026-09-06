@@ -664,7 +664,7 @@
       isCheckingDataVersion = true;
       try {
         const res = await fetchWithTimeout(
-          `${API_URL}?action=version&ts=${Date.now()}`,
+          `${CONFIG.API_URL}?action=version&ts=${Date.now()}`,
           {},
           8000
         );
