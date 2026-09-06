@@ -13,6 +13,7 @@
     let adminPassword = "";
     let isAdmin = false;
     let toastTimer = null;
+	let reportTransitionTimer = null;
 
     const $ = (id) => document.getElementById(id);
 
@@ -310,6 +311,66 @@
       }
     }
 
+	function scheduleNextReportTransition() {
+  if (reportTransitionTimer !== null) {
+    clearTimeout(reportTransitionTimer);
+    reportTransitionTimer = null;
+  }
+
+  const now = Date.now();
+  const transitionTimes = [];
+
+  reports.forEach(report => {
+    const openedAt =
+      parseOpeningDate(report.time);
+
+    if (!openedAt) return;
+
+    const openedMs =
+      openedAt.getTime();
+
+    const readyMs =
+      openedMs +
+      getPreviewCompleteMinutes(report) *
+      60 *
+      1000;
+
+    const expiredMs =
+      openedMs +
+      CONFIG.FRUIT_AVAILABLE_MINUTES *
+      60 *
+      1000;
+
+    if (readyMs > now) {
+      transitionTimes.push(readyMs);
+    }
+
+    if (expiredMs > now) {
+      transitionTimes.push(expiredMs);
+    }
+  });
+
+  if (!transitionTimes.length) {
+    return;
+  }
+
+  const nextTransition =
+    Math.min(...transitionTimes);
+
+  const delay =
+    Math.max(
+      100,
+      nextTransition - Date.now() + 200
+    );
+
+  reportTransitionTimer =
+    setTimeout(() => {
+      renderReports();
+      scheduleNextReportTransition();
+    }, delay);
+}
+
+
     function renderReports() {
       const keyword = $("keyword").value.trim().toLowerCase();
       const color = $("colorFilter").value;
@@ -323,10 +384,16 @@
       });
 
       if (!filtered.length) {
-        $("cards").innerHTML = "";
-        $("empty").style.display = "block";
-        return;
-      }
+ 		 $("cards").innerHTML = "";
+	     $("empty").style.display = "block";
+
+  		if (reportTransitionTimer !== null) {
+    	  clearTimeout(reportTransitionTimer);
+    	  reportTransitionTimer = null;
+  		}
+
+  return;
+}
 
       const previewReports = filtered.filter(report => isUpcomingReport(report));
       const activeReports = filtered.filter(report => !isUpcomingReport(report) && !isExpiredReport(report));
@@ -451,6 +518,8 @@
 
       $("cards").innerHTML = renderPreviewTable(previewReports) + renderActiveTable(activeReports) + renderExpiredTable(expiredReports);
       $("empty").style.display = "none";
+
+	  scheduleNextReportTransition();
     }
 
 
