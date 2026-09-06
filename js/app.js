@@ -779,10 +779,7 @@
       dataVersionTimer = setInterval(checkDataVersion, DATA_VERSION_CHECK_INTERVAL);
     }
 
-    const REPORT_REFRESH_STALE_AFTER = CONFIG.REPORT_REFRESH_STALE_AFTER;
-
     let isLoadingReports = false;
-    let lastReportsRefreshAt = 0;
 
     async function refreshReports({ force = false, showLoading = null } = {}) {
       if (!force && document.visibilityState !== "visible") return;
@@ -810,7 +807,6 @@
         const success = await loadReports();
 
         if (success) {
-          lastReportsRefreshAt = Date.now();
           renderReports();
         }
       } finally {
@@ -826,21 +822,35 @@
       }
     }
 
-    document.addEventListener("visibilitychange", () => {
-      if (document.visibilityState === "visible") {
-        // 回到網頁時同時檢查公告與網站本體是否已有新版。
-        if (Date.now() - lastReportsRefreshAt >= REPORT_REFRESH_STALE_AFTER) {
-          refreshReports();
-        }
-        checkForSiteUpdate();
-        checkDataVersion();
-        startDataVersionTimer();
-      } else {
-        stopDataVersionTimer();
-        stopReportsRefreshTimer();
-        stopSiteUpdateTimer();
-      }
-    });
+document.addEventListener(
+  "visibilitychange",
+  () => {
+    if (
+      document.visibilityState === "visible"
+    ) {
+      // 切回網站時：
+      // 先更新花田目前應該顯示在哪個區域。
+      renderReports();
+      scheduleNextReportTransition();
+
+      // 檢查網站本體是否有新版。
+      checkForSiteUpdate();
+
+      // 只檢查公告版本。
+      // 版本有變時，checkDataVersion() 才會抓完整公告。
+      checkDataVersion();
+
+      // 重新啟動前景計時器。
+      startDataVersionTimer();
+      startSiteUpdateTimer();
+
+    } else {
+      // 離開分頁時暫停輪詢，減少不必要請求。
+      stopDataVersionTimer();
+      stopSiteUpdateTimer();
+    }
+  }
+);
 
     function enableMobileNoticeDrag() {
       const notice = document.querySelector(".notice-float");
