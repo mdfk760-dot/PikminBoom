@@ -213,6 +213,12 @@
       isAdmin = accessRole === "admin";
       adminPassword = isAdmin ? accessPassword : "";
 
+	  if (isAdmin) {
+  		updateSiteUrlOnServer(
+    	  SITE_URL
+  		);
+	  }
+
       document.body.classList.toggle("admin-on", isAdmin);
       $("adminPanel").classList.toggle("active", isAdmin);
       $("adminLoginBtn").style.display = accessRole === "public" ? "inline-block" : "none";
