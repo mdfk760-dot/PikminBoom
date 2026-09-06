@@ -1,7 +1,6 @@
 <!DOCTYPE html>
 <html lang="zh-Hant">
 <head>
-<head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 
@@ -181,7 +180,7 @@
     const $ = (id) => document.getElementById(id);
 
     // 不使用人工版本號：直接檢查 GitHub Pages 目前發布檔案是否已改變。
-    const SITE_UPDATE_CHECK_INTERVAL = 60 * 1000;
+    const SITE_UPDATE_CHECK_INTERVAL = CONFIG.SITE_UPDATE_CHECK_INTERVAL;
     let publishedPageFingerprint = null;
     let siteUpdateTimer = null;
     let siteUpdateDetected = false;
@@ -190,12 +189,12 @@
     // 公開田可安全持久保存；私田 / Admin 含私密座標，只保存於目前分頁 session。
     const PUBLIC_REPORT_CACHE_KEY = "pikminReportsPublicCacheV1";
     const PROTECTED_REPORT_CACHE_KEY = "pikminReportsProtectedCacheV1";
-    const FRONTEND_CACHE_MAX_AGE = 15 * 60 * 1000;
+    const FRONTEND_CACHE_MAX_AGE = CONFIG.FRONTEND_CACHE_MAX_AGE;
     let hasDisplayedReportSnapshot = false;
 
     // 公告即時性：前景每 12 秒只檢查極小的資料版本值。
     // 版本有變才重新抓完整公告，避免高頻讀取 Spreadsheet。
-    const DATA_VERSION_CHECK_INTERVAL = 12 * 1000;
+    const DATA_VERSION_CHECK_INTERVAL = CONFIG.DATA_VERSION_CHECK_INTERVAL;
     let currentDataVersion = null;
     let dataVersionTimer = null;
     let isCheckingDataVersion = false;
@@ -833,7 +832,7 @@
       return openedAt;
     }
 
-    const FRUIT_AVAILABLE_MINUTES = 60;
+    const FRUIT_AVAILABLE_MINUTES = CONFIG.FRUIT_AVAILABLE_MINUTES;
 
     function getReportCoordCount(report) {
       if (report.coords) return report.coords.split("\n").filter(Boolean).length;
@@ -1469,8 +1468,8 @@ ${trkptContent}
       dataVersionTimer = setInterval(checkDataVersion, DATA_VERSION_CHECK_INTERVAL);
     }
 
-    const REPORT_REFRESH_INTERVAL = 60 * 1000;
-    const REPORT_REFRESH_STALE_AFTER = 30 * 1000;
+    const REPORT_REFRESH_INTERVAL = CONFIG.REPORT_REFRESH_INTERVAL;
+    const REPORT_REFRESH_STALE_AFTER = CONFIG.REPORT_REFRESH_STALE_AFTER;
 
     let refreshTimer = null;
     let isLoadingReports = false;
