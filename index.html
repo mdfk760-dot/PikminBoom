@@ -11,7 +11,7 @@
   <meta property="og:type" content="website">
   <meta property="og:title" content="妖妖開花公告">
   <meta property="og:description" content="查看最新開花預報、可收果花田與座標資訊。">
-  <meta property="og:url" content="https://mdfk760-dot.github.io/P1km1nB100m/">
+  <meta property="og:url" content="">
 
   <style>
 	  
@@ -934,6 +934,13 @@
   <script>
     const API_URL = "https://script.google.com/macros/s/AKfycby6rxbH_2xObY8yeCMD3bzspAqwMEIrHhWRfA5OrGHdLx55DPeUKTENqd7DkoAEjn7p/exec";
 
+    // 網站網址由目前實際開啟的頁面自動取得。
+    // 之後 GitHub Pages 網址改名時，不需要再修改 HTML。
+    const SITE_URL = new URL("./", window.location.href).href;
+
+    const ogUrlMeta = document.querySelector('meta[property="og:url"]');
+    if (ogUrlMeta) ogUrlMeta.setAttribute("content", SITE_URL);
+
     const COLORS = ["混色", "黃色", "紅色", "藍色", "白色"];
     const FLOWERS = [
       "雜田",
@@ -1538,7 +1545,7 @@
       "✗ 收果後請刪檔避免開錯檔誤踩",
       "✓ 開花後僅第𝟏小時會有果實",
       "✓ 花瓣不夠可只派𝟏皮種花",
-      "https://mdfk760-dot.github.io/P1km1nB100m/"
+      SITE_URL
     ].join("\n");
 
     function removeCopyNoticeFooter(text) {
