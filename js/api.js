@@ -41,7 +41,7 @@ async function loadReports() {
       requestRole === "admin"
     ) {
       res = await fetchWithTimeout(
-        API_URL,
+        CONFIG.API_URL,
         {
           method: "POST",
           headers: {
@@ -57,7 +57,7 @@ async function loadReports() {
       );
     } else {
       res = await fetchWithTimeout(
-        `${API_URL}?action=list&ts=${Date.now()}`
+        `${CONFIG.API_URL}?action=list&ts=${Date.now()}`
       );
     }
 
@@ -161,7 +161,7 @@ async function verifyAccessPasswordOnce(
 ) {
   const res =
     await fetchWithTimeout(
-      API_URL,
+      CONFIG.API_URL,
       {
         method: "POST",
         headers: {
@@ -254,7 +254,7 @@ async function saveReportToSheet(
 ) {
   try {
     const res = await fetch(
-      API_URL,
+      CONFIG.API_URL,
       {
         method: "POST",
         body: JSON.stringify({
@@ -294,7 +294,7 @@ async function deleteReportFromSheet(
 ) {
   try {
     const res = await fetch(
-      API_URL,
+      CONFIG.API_URL,
       {
         method: "POST",
         body: JSON.stringify({
