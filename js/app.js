@@ -531,19 +531,6 @@
 
     $("clearFormBtn").addEventListener("click", clearForm);
 
-    $("deleteAllBtn").addEventListener("click", async () => {
-      if (!confirm("確定要刪除全部公告嗎？此動作無法復原。")) return;
-      const ids = reports.map(item => item.id).filter(Boolean);
-      for (const id of ids) {
-        const success = await deleteReportFromSheet(id);
-        if (!success) return;
-      }
-
-      await loadReports();
-      renderReports();
-      showToast("已刪除全部公告");
-    });
-
     $("flowerInput").addEventListener("input", () => {
       // 輸入過程即同步有效性；仍可繼續打字搜尋，但無效名稱不能儲存。
       validateFlowerInput(false);
