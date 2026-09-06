@@ -328,3 +328,65 @@ async function deleteReportFromSheet(
     return false;
   }
 }
+
+async function updateSiteUrlOnServer(
+  siteUrl
+) {
+  if (
+    !adminPassword ||
+    !siteUrl
+  ) {
+    return false;
+  }
+
+  try {
+    const res = await fetch(
+      CONFIG.API_URL,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type":
+            "text/plain;charset=utf-8"
+        },
+        body: JSON.stringify({
+          action: "updateSiteUrl",
+          adminPassword,
+          siteUrl
+        })
+      }
+    );
+
+    if (!res.ok) {
+      throw new Error(
+        `HTTP ${res.status}`
+      );
+    }
+
+    const data =
+      await res.json();
+
+    if (!data.success) {
+      console.warn(
+        "網站網址同步失敗：",
+        data.message
+      );
+
+      return false;
+    }
+
+    console.debug(
+      "網站網址已同步：",
+      data.siteUrl
+    );
+
+    return true;
+
+  } catch (error) {
+    console.warn(
+      "網站網址同步失敗：",
+      error
+    );
+
+    return false;
+  }
+}
