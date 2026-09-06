@@ -1,0 +1,919 @@
+	  
+    // 網站網址由目前實際開啟的頁面自動取得。
+    // 之後 GitHub Pages 網址改名時，不需要再修改 HTML。
+    const SITE_URL = new URL("./", window.location.href).href;
+
+    const ogUrlMeta = document.querySelector('meta[property="og:url"]');
+    if (ogUrlMeta) ogUrlMeta.setAttribute("content", SITE_URL);
+
+    let reports = [];
+    let editingId = null;
+    let accessPassword = sessionStorage.getItem("pikminAccessPassword") || "";
+    let accessRole = "public"; // public | private | admin
+    let adminPassword = "";
+    let isAdmin = false;
+    let toastTimer = null;
+
+    const $ = (id) => document.getElementById(id);
+
+    // 不使用人工版本號：直接檢查 GitHub Pages 目前發布檔案是否已改變。
+    const SITE_UPDATE_CHECK_INTERVAL = CONFIG.SITE_UPDATE_CHECK_INTERVAL;
+    let publishedPageFingerprint = null;
+    let siteUpdateTimer = null;
+    let siteUpdateDetected = false;
+
+    // 前端最後成功資料備援。
+    // 公開田可安全持久保存；私田 / Admin 含私密座標，只保存於目前分頁 session。
+    const PUBLIC_REPORT_CACHE_KEY = "pikminReportsPublicCacheV1";
+    const PROTECTED_REPORT_CACHE_KEY = "pikminReportsProtectedCacheV1";
+    const FRONTEND_CACHE_MAX_AGE = CONFIG.FRONTEND_CACHE_MAX_AGE;
+    let hasDisplayedReportSnapshot = false;
+
+    // 公告即時性：前景每 12 秒只檢查極小的資料版本值。
+    // 版本有變才重新抓完整公告，避免高頻讀取 Spreadsheet。
+    const DATA_VERSION_CHECK_INTERVAL = CONFIG.DATA_VERSION_CHECK_INTERVAL;
+    let currentDataVersion = null;
+    let dataVersionTimer = null;
+    let isCheckingDataVersion = false;
+
+    function hashText(text) {
+      let hash = 2166136261;
+      for (let i = 0; i < text.length; i++) {
+        hash ^= text.charCodeAt(i);
+        hash = Math.imul(hash, 16777619);
+      }
+      return (hash >>> 0).toString(16);
+    }
+
+    async function getPublishedPageFingerprint() {
+      // 只比較實際 HTML 內容，不使用 ETag / Last-Modified 等可能受 CDN 影響的 Header。
+      const url = new URL(window.location.origin + window.location.pathname);
+      url.searchParams.set("_updateCheck", Date.now());
+
+      const response = await fetch(url.toString(), {
+        method: "GET",
+        cache: "no-store"
+      });
+
+      if (!response.ok) throw new Error(`版本檢查 HTTP ${response.status}`);
+      return hashText(await response.text());
+    }
+
+    function showSiteUpdateBanner() {
+      if (siteUpdateDetected) return;
+      siteUpdateDetected = true;
+      const banner = $("siteUpdateBanner");
+      if (banner) banner.classList.add("active");
+    }
+
+    async function checkForSiteUpdate({ initialize = false } = {}) {
+      if (siteUpdateDetected) return;
+      if (!initialize && document.visibilityState !== "visible") return;
+
+      try {
+        const fingerprint = await getPublishedPageFingerprint();
+
+        if (!publishedPageFingerprint || initialize) {
+          publishedPageFingerprint = fingerprint;
+          return;
+        }
+
+        if (fingerprint === publishedPageFingerprint) return;
+
+        // 第一次發現內容不同先不提示；3 秒後再次確認。
+        // 只有兩次都取得相同的新內容 hash，才認定 GitHub Pages 已正式更新。
+        await new Promise(resolve => setTimeout(resolve, 3000));
+        if (document.visibilityState !== "visible" || siteUpdateDetected) return;
+
+        const confirmFingerprint = await getPublishedPageFingerprint();
+        if (confirmFingerprint === fingerprint && confirmFingerprint !== publishedPageFingerprint) {
+          showSiteUpdateBanner();
+        }
+      } catch (error) {
+        // 版本檢查失敗不影響公告本身，下一輪再試。
+        console.debug("網站版本檢查失敗", error);
+      }
+    }
+
+    function stopSiteUpdateTimer() {
+      if (siteUpdateTimer !== null) {
+        clearInterval(siteUpdateTimer);
+        siteUpdateTimer = null;
+      }
+    }
+
+    function startSiteUpdateTimer() {
+      stopSiteUpdateTimer();
+      if (document.visibilityState !== "visible" || siteUpdateDetected) return;
+
+      siteUpdateTimer = setInterval(() => {
+        checkForSiteUpdate();
+      }, SITE_UPDATE_CHECK_INTERVAL);
+    }
+
+
+    function getFrontendReportStorage(role = accessRole) {
+      return role === "public" ? localStorage : sessionStorage;
+    }
+
+    function getFrontendReportCacheKey(role = accessRole) {
+      return role === "public" ? PUBLIC_REPORT_CACHE_KEY : PROTECTED_REPORT_CACHE_KEY;
+    }
+
+    function saveReportsSnapshot(role, reportList) {
+      try {
+        const storage = getFrontendReportStorage(role);
+        const key = getFrontendReportCacheKey(role);
+        storage.setItem(key, JSON.stringify({
+          savedAt: Date.now(),
+          role: role === "public" ? "public" : "protected",
+          reports: Array.isArray(reportList) ? reportList : []
+        }));
+      } catch (error) {
+        console.debug("保存前端公告備援失敗", error);
+      }
+    }
+
+    function restoreReportsSnapshot(role = accessRole) {
+      try {
+        const storage = getFrontendReportStorage(role);
+        const key = getFrontendReportCacheKey(role);
+        const raw = storage.getItem(key);
+        if (!raw) return false;
+
+        const snapshot = JSON.parse(raw);
+        if (!snapshot || !Array.isArray(snapshot.reports) || !Number.isFinite(Number(snapshot.savedAt))) {
+          storage.removeItem(key);
+          return false;
+        }
+
+        if (Date.now() - Number(snapshot.savedAt) > FRONTEND_CACHE_MAX_AGE) {
+          storage.removeItem(key);
+          return false;
+        }
+
+        reports = snapshot.reports;
+        hasDisplayedReportSnapshot = true;
+        renderReports();
+        return true;
+      } catch (error) {
+        console.debug("讀取前端公告備援失敗", error);
+        return false;
+      }
+    }
+
+    function clearProtectedReportsSnapshot() {
+      try {
+        sessionStorage.removeItem(PROTECTED_REPORT_CACHE_KEY);
+      } catch (error) {
+        console.debug("清除私田備援失敗", error);
+      }
+    }
+
+    function showToast(message) {
+      const toast = $("toast");
+      toast.textContent = message;
+      toast.classList.add("active");
+      clearTimeout(toastTimer);
+      toastTimer = setTimeout(() => toast.classList.remove("active"), 1600);
+    }
+
+    function fillOptions() {
+      for (const color of COLORS) {
+        $("colorInput").append(new Option(color, color));
+        $("colorFilter").append(new Option(color, color));
+      }
+
+      for (const flower of FLOWERS) {
+        $("flowerInputList").append(new Option(flower, flower));
+        $("flowerFilterList").append(new Option(flower, flower));
+      }
+    }
+
+    function setAdminPanelCollapsed(collapsed) {
+      const panel = $("adminPanel");
+      panel.classList.toggle("collapsed", collapsed);
+      $("adminPanelHeader").setAttribute("aria-expanded", collapsed ? "false" : "true");
+      $("adminCollapseBtn").textContent = collapsed ? "▼" : "▲";
+      sessionStorage.setItem("pikminAdminPanelCollapsed", collapsed ? "true" : "false");
+    }
+
+    function clearAccessSession() {
+      accessPassword = "";
+      adminPassword = "";
+      sessionStorage.removeItem("pikminAccessPassword");
+      // 清掉舊版曾使用的登入狀態。
+      sessionStorage.removeItem("pikminAdminPassword");
+      sessionStorage.removeItem("pikminAdmin");
+      clearProtectedReportsSnapshot();
+    }
+
+    function setAccessMode(role) {
+      accessRole = ["private", "admin"].includes(role) ? role : "public";
+      isAdmin = accessRole === "admin";
+      adminPassword = isAdmin ? accessPassword : "";
+
+      document.body.classList.toggle("admin-on", isAdmin);
+      $("adminPanel").classList.toggle("active", isAdmin);
+      $("adminLoginBtn").style.display = accessRole === "public" ? "inline-block" : "none";
+      $("logoutBtn").style.display = accessRole === "public" ? "none" : "inline-block";
+      $("logoutBtn").textContent = isAdmin ? "管理員登出" : "私田登出";
+
+      if (isAdmin) {
+        setAdminPanelCollapsed(sessionStorage.getItem("pikminAdminPanelCollapsed") === "true");
+      }
+
+      renderReports();
+    }
+
+    // 保留舊函式名稱，避免其他既有程式若有呼叫時失效。
+    function setAdminMode(value) {
+      setAccessMode(value ? "admin" : "public");
+    }
+
+    const COPY_NOTICE_TEXT = [
+      "收果提醒",
+      "✗ 請勿轉傳 & 請勿偷田",
+      "✗ 請勿踩踏沒有提供的座標",
+      "✗ 收果後請刪檔避免開錯檔誤踩",
+      "✓ 開花後僅第𝟏小時會有果實",
+      "✓ 花瓣不夠可只派𝟏皮種花",
+      SITE_URL
+    ].join("\n");
+
+    function removeCopyNoticeFooter(text) {
+      return String(text || "")
+        .replace(/\n{0,2}收果提醒[\s\S]*$/u, "")
+        .trim();
+    }
+
+    function buildCopyContent(report) {
+      const base = removeCopyNoticeFooter(buildDisplayText(report));
+      return `${base}\n\n${COPY_NOTICE_TEXT}`.trim();
+    }
+
+    function buildDisplayText(report) {
+      if (report.raw) {
+        const coordCount = report.coords ? report.coords.split("\n").filter(Boolean).length : Number(report.amount || 0);
+        return report.raw.replace(/(🌸[^\n]*?)(\d+)\s*株/, `$1${coordCount}株`);
+      }
+      return `${report.place}\n🌸${report.color}${report.flower}${report.amount ? report.amount + "株" : ""}\n⏰${formatDisplayTime(report.time)}\n📝${report.note}`.trim();
+    }
+
+    async function copyCoords(id) {
+      const report = reports.find(item => item.id === id);
+      const coords = report && report.coords ? report.coords : "";
+      if (!coords) {
+        showToast("這筆公告沒有座標可以複製");
+        return;
+      }
+
+      try {
+        await navigator.clipboard.writeText(coords);
+        showToast("已複製座標");
+      } catch (error) {
+        const temp = document.createElement("textarea");
+        temp.value = coords;
+        document.body.appendChild(temp);
+        temp.select();
+        document.execCommand("copy");
+        temp.remove();
+        showToast("已複製座標");
+      }
+    }
+
+    async function copyContent(id) {
+      const report = reports.find(item => item.id === id);
+      const content = report ? buildCopyContent(report) : "";
+      if (!content) {
+        showToast("這筆公告沒有內文可以複製");
+        return;
+      }
+
+      try {
+        await navigator.clipboard.writeText(content);
+        showToast("已複製內文");
+      } catch (error) {
+        const temp = document.createElement("textarea");
+        temp.value = content;
+        document.body.appendChild(temp);
+        temp.select();
+        document.execCommand("copy");
+        temp.remove();
+        showToast("已複製內文");
+      }
+    }
+
+    function renderReports() {
+      const keyword = $("keyword").value.trim().toLowerCase();
+      const color = $("colorFilter").value;
+      const flower = $("flowerFilter").value.trim().toLowerCase();
+
+      const filtered = reports.filter(report => {
+        const combined = JSON.stringify(report).toLowerCase();
+        return (!keyword || combined.includes(keyword)) &&
+          (!color || report.color === color) &&
+          (!flower || String(report.flower || "").toLowerCase().includes(flower));
+      });
+
+      if (!filtered.length) {
+        $("cards").innerHTML = "";
+        $("empty").style.display = "block";
+        return;
+      }
+
+      const previewReports = filtered.filter(report => isUpcomingReport(report));
+      const activeReports = filtered.filter(report => !isUpcomingReport(report) && !isExpiredReport(report));
+      const expiredReports = filtered.filter(report => isExpiredReport(report));
+
+      function renderPreviewTable(list) {
+        if (!list.length) return "";
+
+        return `
+          <div class="result-section-title">開花預報 <span class="sub">目前正處於未開花 / 開花中，暫不提供座標，開花完畢後會轉移到可收果區域</span></div>
+          <div class="result-table preview-table">
+            <div class="result-row result-header preview-row">
+              <div class="result-cell">花朵</div>
+              <div class="result-cell">預計開花時間</div>
+              <div class="result-cell">預計完成時間</div>
+              <div class="result-cell">操作</div>
+            </div>
+            ${list.map(report => {
+              const flowerText = `${report.color || "未填花色"}${report.flower || "未填花種"}${report.amount ? report.amount + "株" : ""}`;
+              const previewStatus = getPreviewStatus(report);
+              const previewCompleteTime = getPreviewCompleteTime(report);
+              return `
+                <div class="result-row preview-row">
+                  <div class="result-cell result-flower"><span class="mobile-label">花朵</span>🌸 ${escapeHtml(flowerText)}</div>
+                  <div class="result-cell"><span class="mobile-label">開花</span>⏰ ${escapeHtml(formatDisplayTime(report.time) || "未填時間")}</div>
+                  <div class="result-cell"><span class="mobile-label">完成</span>✅ ${escapeHtml(previewCompleteTime)}</div>
+                  <div class="result-cell">
+                    <div class="row-actions">
+                      <span class="preview-status">${escapeHtml(previewStatus)}</span>
+                      <span class="admin-actions">
+                        <button class="green" onclick="editReport('${report.id}')">編輯</button>
+                        <button class="danger" onclick="deleteReport('${report.id}')">刪除</button>
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              `;
+            }).join("")}
+          </div>
+        `;
+      }
+
+      function renderActiveTable(list) {
+        if (!list.length) return "";
+
+        return `
+          <div class="result-section-title">可收果區域 <span class="sub">預計開花時間後 1 小時內提供座標</span></div>
+          <div class="result-table active-table">
+            <div class="result-row result-header">
+              <div class="result-cell">花田名稱</div>
+              <div class="result-cell">花朵</div>
+              <div class="result-cell">開花時間</div>
+              <div class="result-cell">備註</div>
+              <div class="result-cell result-count">座標數</div>
+              <div class="result-cell">操作</div>
+            </div>
+            ${list.map(report => {
+              const coordCount = report.coords ? report.coords.split("\n").filter(Boolean).length : 0;
+              const flowerText = `${report.color || "未填花色"}${report.flower || "未填花種"}${report.amount ? report.amount + "株" : ""}`;
+              return `
+                <div class="result-row">
+                  <div class="result-cell result-place"><span class="mobile-label">花田</span>${escapeHtml(report.place || "未命名花田")}</div>
+                  <div class="result-cell result-flower"><span class="mobile-label">花朵</span>🌸 ${escapeHtml(flowerText)}</div>
+                  <div class="result-cell"><span class="mobile-label">時間</span>⏰ ${escapeHtml(formatDisplayTime(report.time) || "未填時間")}</div>
+                  <div class="result-cell"><span class="mobile-label">備註</span>📝 ${escapeHtml(report.note || "無備註")}</div>
+                  <div class="result-cell result-count"><span class="mobile-label">座標</span>${coordCount}</div>
+                  <div class="result-cell">
+                    <div class="row-actions">
+                      <button onclick="copyContent('${report.id}')">複製內文</button>
+                      <button class="green" onclick="copyCoords('${report.id}')">複製座標</button>
+                      <button class="secondary" onclick="arJumpHarvest('${report.id}')">AR跳收</button>
+                      <button class="download" onclick="downloadFruitGpx('${report.id}')">下載GPX</button>
+                      <span class="admin-actions">
+                        <button class="green" onclick="editReport('${report.id}')">編輯</button>
+                        <button class="danger" onclick="deleteReport('${report.id}')">刪除</button>
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              `;
+            }).join("")}
+          </div>
+        `;
+      }
+
+      function renderExpiredTable(list) {
+        if (!list.length) return "";
+
+        return `
+          <div class="result-section-title">過期區域 <span class="sub">預計開花時間超過 1 小時，不提供座標</span></div>
+          <div class="result-table expired-table">
+            <div class="result-row result-header expired-row">
+              <div class="result-cell">花田名稱</div>
+              <div class="result-cell">花朵</div>
+              <div class="result-cell">開花時間</div>
+              <div class="result-cell">備註</div>
+              <div class="result-cell">狀態 / 操作</div>
+            </div>
+            ${list.map(report => {
+              const flowerText = `${report.color || "未填花色"}${report.flower || "未填花種"}${report.amount ? report.amount + "株" : ""}`;
+              return `
+                <div class="result-row expired-row">
+                  <div class="result-cell result-place"><span class="mobile-label">花田</span>${escapeHtml(report.place || "未命名花田")}</div>
+                  <div class="result-cell result-flower"><span class="mobile-label">花朵</span>🌸 ${escapeHtml(flowerText)}</div>
+                  <div class="result-cell"><span class="mobile-label">時間</span>⏰ ${escapeHtml(formatDisplayTime(report.time) || "未填時間")}</div>
+                  <div class="result-cell"><span class="mobile-label">備註</span>📝 ${escapeHtml(report.note || "無備註")}</div>
+                  <div class="result-cell">
+                    <div class="row-actions">
+                      <span class="expired-status">已過期</span>
+                      <span class="admin-actions">
+                        <button class="green" onclick="editReport('${report.id}')">編輯</button>
+                        <button class="danger" onclick="deleteReport('${report.id}')">刪除</button>
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              `;
+            }).join("")}
+          </div>
+        `;
+      }
+
+      $("cards").innerHTML = renderPreviewTable(previewReports) + renderActiveTable(activeReports) + renderExpiredTable(expiredReports);
+      $("empty").style.display = "none";
+    }
+
+
+    function editReport(id) {
+      const report = reports.find(item => item.id === id);
+      if (report) setFormData(report);
+    }
+
+    async function deleteReport(id) {
+      if (!confirm("確定要刪除此公告嗎？")) return;
+
+      const success = await deleteReportFromSheet(id);
+      if (!success) return;
+
+      await loadReports();
+      renderReports();
+      showToast("已刪除公告");
+    }
+
+    window.copyCoords = copyCoords;
+    window.arJumpHarvest = arJumpHarvest;
+    window.downloadFruitGpx = downloadFruitGpx;
+    window.copyContent = copyContent;
+    window.editReport = editReport;
+    window.deleteReport = deleteReport;
+
+    $("parseBtn").addEventListener("click", () => {
+      const rawText = cleanSpreadsheetText($("rawInput").value);
+      const coordsText = cleanCoordsText($("coordsInput").value);
+
+      if (!rawText || !coordsText) {
+        alert("請先填入「內容」與「座標」兩個欄位，再進行解析，避免資料缺漏。");
+        return;
+      }
+
+      const parsed = parseReportText(rawText);
+      const coordCount = getCoordCount(coordsText);
+      $("rawInput").value = parsed.raw;
+      $("coordsInput").value = coordsText;
+      $("placeInput").value = parsed.place;
+      if (parsed.color) $("colorInput").value = parsed.color;
+      if (parsed.flower) $("flowerInput").value = parsed.flower;
+      $("amountInput").value = coordCount;
+      $("timeInput").value = parsed.time;
+      $("noteInput").value = parsed.note;
+      showToast(`已解析，株數已套用座標數量：${coordCount}`);
+    });
+
+    $("saveBtn").addEventListener("click", async () => {
+      const rawText = cleanSpreadsheetText($("rawInput").value);
+      const coordsText = cleanCoordsText($("coordsInput").value);
+
+      if (!rawText || !coordsText) {
+        alert("請先填入「內容」與「座標」兩個欄位，再儲存公告，避免資料缺漏。");
+        return;
+      }
+
+      $("rawInput").value = rawText;
+      $("coordsInput").value = coordsText;
+      syncAmountWithCoords();
+
+      // 最後一道強制驗證：未列於 FLOWERS 清單的內容絕不送往 Google Apps Script。
+      if (!validateFlowerInput(true)) return;
+
+      const data = getFormData();
+      if (!getCanonicalFlowerName(data.flower)) {
+        alert("花朵種類驗證失敗，請重新從清單選擇。");
+        $("flowerInput").focus();
+        return;
+      }
+      if (!data.place) {
+        alert("請至少填寫地點 / 花田名稱。若已貼上公告文字，可先按「從公告文字自動解析」。");
+        return;
+      }
+
+      const success = await saveReportToSheet(data);
+      if (!success) return;
+
+      await loadReports();
+      clearForm();
+      renderReports();
+      showToast("已儲存公告");
+    });
+
+    $("clearFormBtn").addEventListener("click", clearForm);
+
+    $("deleteAllBtn").addEventListener("click", async () => {
+      if (!confirm("確定要刪除全部公告嗎？此動作無法復原。")) return;
+      const ids = reports.map(item => item.id).filter(Boolean);
+      for (const id of ids) {
+        const success = await deleteReportFromSheet(id);
+        if (!success) return;
+      }
+
+      await loadReports();
+      renderReports();
+      showToast("已刪除全部公告");
+    });
+
+    $("flowerInput").addEventListener("input", () => {
+      // 輸入過程即同步有效性；仍可繼續打字搜尋，但無效名稱不能儲存。
+      validateFlowerInput(false);
+    });
+    $("flowerInput").addEventListener("change", () => validateFlowerInput(false));
+    $("flowerInput").addEventListener("blur", () => validateFlowerInput(false));
+
+    function toggleAdminPanel() {
+      setAdminPanelCollapsed(!$("adminPanel").classList.contains("collapsed"));
+    }
+
+    $("adminPanelHeader").addEventListener("click", toggleAdminPanel);
+    $("adminPanelHeader").addEventListener("keydown", event => {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        toggleAdminPanel();
+      }
+    });
+
+    $("coordsInput").addEventListener("input", syncAmountWithCoords);
+    $("keyword").addEventListener("input", renderReports);
+    $("colorFilter").addEventListener("change", renderReports);
+    $("flowerFilter").addEventListener("input", renderReports);
+    $("flowerFilter").addEventListener("change", renderReports);
+
+    $("adminLoginBtn").addEventListener("click", () => $("loginDialog").showModal());
+    $("closeLoginBtn").addEventListener("click", () => $("loginDialog").close());
+    $("passwordInput").addEventListener("keydown", event => {
+      if (event.key === "Enter") $("confirmLoginBtn").click();
+    });
+    $("confirmLoginBtn").addEventListener("click", async () => {
+      const inputPassword = $("passwordInput").value;
+
+      if (!inputPassword) {
+        alert("請輸入密碼。");
+        return;
+      }
+
+      const loginBtn = $("confirmLoginBtn");
+      const originalLoginText = loginBtn.textContent;
+      loginBtn.disabled = true;
+      loginBtn.textContent = "驗證中…";
+
+      let result;
+      try {
+        result = await verifyAccessPassword(inputPassword);
+      } finally {
+        loginBtn.disabled = false;
+        loginBtn.textContent = originalLoginText;
+      }
+
+      if (!result.success || !["private", "admin"].includes(result.role)) {
+        alert(result.message || "密碼錯誤。");
+        return;
+      }
+
+      accessPassword = inputPassword;
+      sessionStorage.setItem("pikminAccessPassword", inputPassword);
+      $("passwordInput").value = "";
+      $("loginDialog").close();
+      setAccessMode(result.role);
+
+      // 驗證成功的同一個 API 回應已附帶該權限可見的公告，
+      // 不再登入成功後立刻發第二次 list POST。
+      if (Array.isArray(result.reports)) {
+        reports = result.reports;
+        if (result.dataVersion != null) currentDataVersion = String(result.dataVersion);
+        hasDisplayedReportSnapshot = true;
+        saveReportsSnapshot(result.role, reports);
+        renderReports();
+      } else {
+        // 相容舊版 Apps Script：若尚未回傳 reports，才走原本的第二次讀取。
+        hasDisplayedReportSnapshot = false;
+        const restoredProtected = restoreReportsSnapshot(result.role);
+        await refreshReports({ force: true, showLoading: !restoredProtected });
+      }
+
+      showToast(result.role === "admin" ? "已進入 Admin 管理模式" : "已進入私田模式");
+    });
+
+    $("logoutBtn").addEventListener("click", () => {
+      const wasAdmin = isAdmin;
+      clearForm();
+
+      // 登出瞬間先在記憶體中移除所有私田，絕不等待 API 回應。
+      // 這樣即使 Google Apps Script 很慢，私田也不會繼續留在畫面上。
+      const publicOnlyReports = reports.filter(report =>
+        !String(report && report.place || "").includes("私")
+      );
+
+      clearProtectedReportsSnapshot();
+      clearAccessSession();
+      accessRole = "public";
+      reports = publicOnlyReports;
+      hasDisplayedReportSnapshot = true;
+      saveReportsSnapshot("public", reports);
+      setAccessMode("public");
+      renderReports();
+
+      showToast(wasAdmin ? "已離開 Admin 管理模式" : "已離開私田模式");
+
+      // 背景再向後端同步最新公開田，不阻塞登出。
+      refreshReports({ force: true, showLoading: false });
+    });
+
+
+
+    $("reloadLatestBtn").addEventListener("click", () => {
+      // 加上一次性參數，避免瀏覽器直接沿用舊 HTML 快取。
+      const url = new URL(window.location.href);
+      url.searchParams.set("_latest", Date.now());
+      window.location.replace(url.toString());
+    });
+
+    async function checkDataVersion() {
+      if (document.visibilityState !== "visible" || isCheckingDataVersion || isLoadingReports) return;
+
+      isCheckingDataVersion = true;
+      try {
+        const res = await fetchWithTimeout(
+          `${API_URL}?action=version&ts=${Date.now()}`,
+          {},
+          8000
+        );
+        if (!res.ok) return;
+
+        const data = await res.json();
+        if (!data.success || data.dataVersion == null) return;
+
+        const serverVersion = String(data.dataVersion);
+        if (currentDataVersion === null) {
+          currentDataVersion = serverVersion;
+          return;
+        }
+
+        if (serverVersion !== currentDataVersion) {
+          // 不先覆蓋 currentDataVersion；完整讀取成功時 loadReports() 會同步版本。
+          // 若這次更新失敗，12 秒後會再嘗試，不會漏掉更新。
+          await refreshReports({ force: true, showLoading: false });
+        }
+      } catch (error) {
+        // 輕量版本檢查失敗不影響目前資料，下一輪再試。
+        console.debug("公告資料版本檢查失敗", error);
+      } finally {
+        isCheckingDataVersion = false;
+      }
+    }
+
+    function stopDataVersionTimer() {
+      if (dataVersionTimer !== null) {
+        clearInterval(dataVersionTimer);
+        dataVersionTimer = null;
+      }
+    }
+
+    function startDataVersionTimer() {
+      stopDataVersionTimer();
+      if (document.visibilityState !== "visible") return;
+      dataVersionTimer = setInterval(checkDataVersion, DATA_VERSION_CHECK_INTERVAL);
+    }
+
+    const REPORT_REFRESH_INTERVAL = CONFIG.REPORT_REFRESH_INTERVAL;
+    const REPORT_REFRESH_STALE_AFTER = CONFIG.REPORT_REFRESH_STALE_AFTER;
+
+    let refreshTimer = null;
+    let isLoadingReports = false;
+    let lastReportsRefreshAt = 0;
+
+    async function refreshReports({ force = false, showLoading = null } = {}) {
+      if (!force && document.visibilityState !== "visible") return;
+      if (isLoadingReports) return;
+
+      isLoadingReports = true;
+
+      const loading = $("loadingMessage");
+      const shouldShowLoading = showLoading === null ? !hasDisplayedReportSnapshot : showLoading;
+      const loadingBaseText = "🌱 皮克敏正在搬運花田資料，請稍後";
+      let loadingDotStep = 1;
+      let loadingAnimationTimer = null;
+
+      if (loading && shouldShowLoading) {
+        loading.style.display = "block";
+        loading.textContent = `${loadingBaseText}.`;
+
+        loadingAnimationTimer = setInterval(() => {
+          loadingDotStep = loadingDotStep % 3 + 1;
+          loading.textContent = `${loadingBaseText}${".".repeat(loadingDotStep)}`;
+        }, 450);
+      }
+
+      try {
+        const success = await loadReports();
+
+        if (success) {
+          lastReportsRefreshAt = Date.now();
+          renderReports();
+        }
+      } finally {
+        if (loadingAnimationTimer !== null) {
+          clearInterval(loadingAnimationTimer);
+        }
+
+        if (loading) {
+          loading.style.display = "none";
+        }
+
+        isLoadingReports = false;
+      }
+    }
+
+    function stopReportsRefreshTimer() {
+      if (refreshTimer !== null) {
+        clearInterval(refreshTimer);
+        refreshTimer = null;
+      }
+    }
+
+    function startReportsRefreshTimer() {
+      stopReportsRefreshTimer();
+
+      // 只有頁面在前景時才建立固定刷新計時器。
+      if (document.visibilityState !== "visible") return;
+
+      refreshTimer = setInterval(() => {
+        refreshReports();
+      }, REPORT_REFRESH_INTERVAL);
+    }
+
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "visible") {
+        // 回到網頁時同時檢查公告與網站本體是否已有新版。
+        if (Date.now() - lastReportsRefreshAt >= REPORT_REFRESH_STALE_AFTER) {
+          refreshReports();
+        }
+        checkForSiteUpdate();
+        checkDataVersion();
+        startDataVersionTimer();
+        startReportsRefreshTimer();
+        startSiteUpdateTimer();
+      } else {
+        stopDataVersionTimer();
+        stopReportsRefreshTimer();
+        stopSiteUpdateTimer();
+      }
+    });
+
+    function enableMobileNoticeDrag() {
+      const notice = document.querySelector(".notice-float");
+      if (!notice) return;
+
+      const mobileMedia = window.matchMedia("(max-width: 1024px)");
+      const storageKey = "pikminNoticeFloatPosition";
+      let dragging = false;
+      let pointerOffsetX = 0;
+      let pointerOffsetY = 0;
+
+      function clampPosition(left, top) {
+        const margin = 8;
+        const maxLeft = Math.max(margin, window.innerWidth - notice.offsetWidth - margin);
+        const maxTop = Math.max(margin, window.innerHeight - notice.offsetHeight - margin);
+        return {
+          left: Math.min(Math.max(left, margin), maxLeft),
+          top: Math.min(Math.max(top, margin), maxTop)
+        };
+      }
+
+      function applyPosition(left, top, save = false) {
+        if (!mobileMedia.matches) return;
+        const position = clampPosition(left, top);
+        notice.style.left = `${position.left}px`;
+        notice.style.top = `${position.top}px`;
+        notice.style.right = "auto";
+        notice.style.bottom = "auto";
+
+        if (save) {
+          localStorage.setItem(storageKey, JSON.stringify(position));
+        }
+      }
+
+      function restorePosition() {
+        if (!mobileMedia.matches) {
+          notice.style.left = "";
+          notice.style.top = "";
+          notice.style.right = "";
+          notice.style.bottom = "";
+          return;
+        }
+
+        try {
+          const saved = JSON.parse(localStorage.getItem(storageKey) || "null");
+          if (saved && Number.isFinite(saved.left) && Number.isFinite(saved.top)) {
+            applyPosition(saved.left, saved.top);
+          }
+        } catch (error) {
+          localStorage.removeItem(storageKey);
+        }
+      }
+
+      notice.addEventListener("pointerdown", event => {
+        if (!mobileMedia.matches || event.button !== 0) return;
+
+        const rect = notice.getBoundingClientRect();
+        dragging = true;
+        pointerOffsetX = event.clientX - rect.left;
+        pointerOffsetY = event.clientY - rect.top;
+        notice.classList.add("dragging");
+        notice.setPointerCapture(event.pointerId);
+        event.preventDefault();
+      });
+
+      notice.addEventListener("pointermove", event => {
+        if (!dragging || !mobileMedia.matches) return;
+        applyPosition(event.clientX - pointerOffsetX, event.clientY - pointerOffsetY);
+        event.preventDefault();
+      });
+
+      function stopDragging(event) {
+        if (!dragging) return;
+        dragging = false;
+        notice.classList.remove("dragging");
+
+        const rect = notice.getBoundingClientRect();
+        applyPosition(rect.left, rect.top, true);
+
+        if (event && notice.hasPointerCapture(event.pointerId)) {
+          notice.releasePointerCapture(event.pointerId);
+        }
+      }
+
+      notice.addEventListener("pointerup", stopDragging);
+      notice.addEventListener("pointercancel", stopDragging);
+
+      window.addEventListener("resize", () => {
+        if (!mobileMedia.matches) return;
+        const rect = notice.getBoundingClientRect();
+        applyPosition(rect.left, rect.top, true);
+      });
+
+      mobileMedia.addEventListener("change", restorePosition);
+      requestAnimationFrame(restorePosition);
+    }
+
+    async function initializeAccessAndReports() {
+      // 先記錄目前 GitHub Pages 的發布指紋，之後有更新就能通知仍開著舊頁面的使用者。
+      await checkForSiteUpdate({ initialize: true });
+
+      fillOptions();
+      enableMobileNoticeDrag();
+
+      // 沒有本分頁登入憑證時，不保留任何私田備援。
+      if (!accessPassword) clearProtectedReportsSnapshot();
+
+      if (accessPassword) {
+        const result = await verifyAccessPassword(accessPassword);
+        if (result.success && ["private", "admin"].includes(result.role)) {
+          setAccessMode(result.role);
+        } else {
+          clearAccessSession();
+          setAccessMode("public");
+        }
+      } else {
+        setAccessMode("public");
+      }
+
+      hasDisplayedReportSnapshot = false;
+      const restoredSnapshot = restoreReportsSnapshot(accessRole);
+      await refreshReports({ force: true, showLoading: !restoredSnapshot });
+      startDataVersionTimer();
+      startReportsRefreshTimer();
+      startSiteUpdateTimer();
+    }
+
+    initializeAccessAndReports();
