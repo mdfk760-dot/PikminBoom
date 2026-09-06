@@ -1,4 +1,4 @@
-	  
+		  
     // 網站網址由目前實際開啟的頁面自動取得。
     // 之後 GitHub Pages 網址改名時，不需要再修改 HTML。
     const SITE_URL = new URL("./", window.location.href).href;
@@ -736,10 +736,22 @@
         if (!data.success || data.dataVersion == null) return;
 
         const serverVersion = String(data.dataVersion);
+		  
         if (currentDataVersion === null) {
-          currentDataVersion = serverVersion;
-          return;
-        }
+  			currentDataVersion = serverVersion;
+			
+		  // 如果目前完全沒有成功載入過公告，
+		  // 代表首次完整載入可能失敗。
+		  // 此時 version check 成功後，再嘗試抓一次完整公告。
+		  if (!hasDisplayedReportSnapshot) {
+		    await refreshReports({
+		      force: true,
+		      showLoading: true
+		    });
+		  }
+
+  return;
+}
 
         if (serverVersion !== currentDataVersion) {
           // 不先覆蓋 currentDataVersion；完整讀取成功時 loadReports() 會同步版本。
