@@ -1,4 +1,6 @@
-const REPORT_FETCH_TIMEOUT = 15000;
+const REPORT_FETCH_TIMEOUT = 20000;
+const REPORT_FETCH_RETRY_DELAYS = [1500, 5000];
+
 const ACCESS_VERIFY_TIMEOUTS = [12000, 25000];
 
 async function fetchWithTimeout(
@@ -29,130 +31,205 @@ function wait(ms) {
   );
 }
 
-async function loadReports() {
+async function loadReportsOnce() {
   const requestRole = accessRole;
   const requestPassword = accessPassword;
 
-  try {
-    let res;
+  let res;
 
+  if (
+    requestRole === "private" ||
+    requestRole === "admin"
+  ) {
+    res = await fetchWithTimeout(
+      CONFIG.API_URL,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type":
+            "text/plain;charset=utf-8"
+        },
+        body: JSON.stringify({
+          action: "list",
+          accessPassword:
+            requestPassword
+        })
+      },
+      REPORT_FETCH_TIMEOUT
+    );
+
+  } else {
+    res = await fetchWithTimeout(
+      `${CONFIG.API_URL}?action=list&ts=${Date.now()}`,
+      {},
+      REPORT_FETCH_TIMEOUT
+    );
+  }
+
+  if (!res.ok) {
+    throw new Error(
+      `HTTP ${res.status}`
+    );
+  }
+
+  const data = await res.json();
+
+  if (!data.success) {
     if (
-      requestRole === "private" ||
-      requestRole === "admin"
+      (
+        requestRole === "private" ||
+        requestRole === "admin"
+      ) &&
+      data.code === "INVALID_ACCESS"
     ) {
-      res = await fetchWithTimeout(
-        CONFIG.API_URL,
-        {
-          method: "POST",
-          headers: {
-            "Content-Type":
-              "text/plain;charset=utf-8"
-          },
-          body: JSON.stringify({
-            action: "list",
-            accessPassword:
-              requestPassword
-          })
-        }
+      clearAccessSession();
+      setAccessMode("public");
+      restoreReportsSnapshot(
+        "public"
       );
-    } else {
-      res = await fetchWithTimeout(
-        `${CONFIG.API_URL}?action=list&ts=${Date.now()}`
+
+      showToast(
+        "登入已失效，已切回公開模式"
       );
+
+      return await loadReports();
     }
 
-    if (!res.ok) {
-      throw new Error(
-        `HTTP ${res.status}`
-      );
-    }
+    throw new Error(
+      data.message ||
+      "讀取資料失敗"
+    );
+  }
 
-    const data = await res.json();
+  if (
+    requestRole !== accessRole
+  ) {
+    return false;
+  }
 
-    if (!data.success) {
-      if (
-        (
-          requestRole === "private" ||
-          requestRole === "admin"
-        ) &&
-        data.code === "INVALID_ACCESS"
-      ) {
-        clearAccessSession();
-        setAccessMode("public");
-        restoreReportsSnapshot("public");
-        showToast(
-          "登入已失效，已切回公開模式"
-        );
-
-        return await loadReports();
-      }
-
-      throw new Error(
-        data.message ||
-        "讀取資料失敗"
-      );
-    }
-
-    if (
-      requestRole !== accessRole
-    ) {
-      return false;
-    }
-
-    reports = Array.isArray(
-      data.reports
-    )
+  reports =
+    Array.isArray(data.reports)
       ? data.reports
       : [];
 
-    if (
-      data.dataVersion != null
-    ) {
-      currentDataVersion =
-        String(data.dataVersion);
-    }
+  if (
+    data.dataVersion != null
+  ) {
+    currentDataVersion =
+      String(data.dataVersion);
+  }
 
-    saveReportsSnapshot(
-      requestRole,
-      reports
+  saveReportsSnapshot(
+    requestRole,
+    reports
+  );
+
+  hasDisplayedReportSnapshot =
+    true;
+
+  return true;
+}
+
+async function loadReports() {
+  let lastError = null;
+
+  const totalAttempts =
+    REPORT_FETCH_RETRY_DELAYS.length + 1;
+
+  for (
+    let attempt = 0;
+    attempt < totalAttempts;
+    attempt++
+  ) {
+    try {
+      const success =
+        await loadReportsOnce();
+
+      if (success) {
+        if (attempt > 0) {
+          console.log(
+            `公告資料第 ${attempt + 1} 次嘗試成功`
+          );
+        }
+
+        return true;
+      }
+
+      return false;
+
+    } catch (error) {
+      lastError = error;
+
+      const timedOut =
+        error &&
+        error.name === "AbortError";
+
+      console.debug(
+        timedOut
+          ? `公告資料第 ${attempt + 1} 次讀取逾時`
+          : `公告資料第 ${attempt + 1} 次讀取失敗`,
+        error
+      );
+
+      if (
+        attempt <
+        REPORT_FETCH_RETRY_DELAYS.length
+      ) {
+        const delay =
+          REPORT_FETCH_RETRY_DELAYS[
+            attempt
+          ];
+
+        if (
+          !hasDisplayedReportSnapshot
+        ) {
+          const loading =
+            document.getElementById(
+              "loadingMessage"
+            );
+
+          if (loading) {
+            loading.textContent =
+              `🌱 花田資料連線較慢，正在重新嘗試（${attempt + 2}/${totalAttempts}）…`;
+          }
+        }
+
+        await wait(delay);
+      }
+    }
+  }
+
+  const timedOut =
+    lastError &&
+    lastError.name === "AbortError";
+
+  const hasFallback =
+    hasDisplayedReportSnapshot ||
+    restoreReportsSnapshot(
+      accessRole
     );
 
-    hasDisplayedReportSnapshot = true;
+  if (hasFallback) {
+    showToast(
+      timedOut
+        ? "連線較慢，目前先顯示上次成功資料"
+        : "暫時無法更新，目前先顯示上次成功資料"
+    );
 
-    return true;
-
-  } catch (error) {
-    console.error(error);
-
-    const timedOut =
-      error &&
-      error.name === "AbortError";
-
-    const hasFallback =
-      requestRole === accessRole &&
-      (
-        hasDisplayedReportSnapshot ||
-        restoreReportsSnapshot(
-          requestRole
-        )
-      );
-
-    if (hasFallback) {
-      showToast(
-        timedOut
-          ? "連線逾時，目前顯示上次成功資料"
-          : "暫時無法更新，目前顯示上次成功資料"
-      );
-    } else {
-      showToast(
-        timedOut
-          ? "資料載入逾時，稍後會自動重試"
-          : "讀取 Google Sheet 失敗"
-      );
-    }
-
-    return false;
+  } else {
+    showToast(
+      timedOut
+        ? "花田資料暫時無法載入，稍後會再嘗試"
+        : "暫時無法讀取花田資料"
+    );
   }
+
+  console.error(
+    "公告資料多次讀取失敗：",
+    lastError
+  );
+
+  return false;
 }
 
 async function verifyAccessPasswordOnce(
