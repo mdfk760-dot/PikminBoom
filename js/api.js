@@ -329,18 +329,19 @@ async function deleteReportFromSheet(
   }
 }
 
-async function updateSiteUrlOnServer(
-  siteUrl
-) {
-  
-  if (
-    !adminPassword ||
-    !siteUrl
-  ) {
+async function updateSiteUrlOnServer(siteUrl) {
+  if (!adminPassword || !siteUrl) {
+    console.warn(
+      "網站網址未同步：目前不是 Admin 或網址不存在"
+    );
     return false;
   }
 
   try {
+    console.log(
+      "開始同步網站網址：" + siteUrl
+    );
+
     const res = await fetch(
       CONFIG.API_URL,
       {
@@ -353,7 +354,8 @@ async function updateSiteUrlOnServer(
           action: "updateSiteUrl",
           adminPassword,
           siteUrl
-        })
+        }),
+        cache: "no-store"
       }
     );
 
@@ -363,27 +365,26 @@ async function updateSiteUrlOnServer(
       );
     }
 
-    const data =
-      await res.json();
+    const data = await res.json();
 
     if (!data.success) {
       console.warn(
-        "網站網址同步失敗：",
-        data.message
+        "網站網址同步失敗：" +
+        (data.message || "未知錯誤")
       );
 
       return false;
     }
 
-    console.debug(
-      "網站網址已同步：",
+    console.log(
+      "網站網址已同步：" +
       data.siteUrl
     );
 
     return true;
 
   } catch (error) {
-    console.warn(
+    console.error(
       "網站網址同步失敗：",
       error
     );
