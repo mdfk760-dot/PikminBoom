@@ -964,8 +964,6 @@
       const restoredSnapshot = restoreReportsSnapshot(accessRole);
       await refreshReports({ force: true, showLoading: !restoredSnapshot });
       startDataVersionTimer();
-      startReportsRefreshTimer();
-      startSiteUpdateTimer();
     }
 
     initializeAccessAndReports();
