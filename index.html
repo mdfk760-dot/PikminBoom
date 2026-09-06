@@ -414,11 +414,6 @@
       return `${report.place}\n🌸${report.color}${report.flower}${report.amount ? report.amount + "株" : ""}\n⏰${formatDisplayTime(report.time)}\n📝${report.note}`.trim();
     }
 
-      // 預計開花時間後 60 分鐘，轉移到過期區域。
-      const expireAt = openedAt.getTime() + FRUIT_AVAILABLE_MINUTES * 60 * 1000;
-      return Date.now() >= expireAt;
-    }
-
     async function copyCoords(id) {
       const report = reports.find(item => item.id === id);
       const coords = report && report.coords ? report.coords : "";
